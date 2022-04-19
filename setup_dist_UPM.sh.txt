@@ -1,0 +1,186 @@
+#---------------------------------------------------------
+# Procedure and description of the stream data analyis. 
+# command are either in a bash shell or in ksql cli
+# uses docker, python3 and python-kafka 
+#---------------------------------------------------------
+
+
+# docker container with ksql environment
+# https://docs.ksqldb.io/en/latest/operate-and-deploy/installation/installing/
+
+git clone https://github.com/confluentinc/ksql.git
+
+docker-compose up -d
+
+
+# z@T470:~/kafka/ksql$ docker-compose ps
+#              Name                          Command            State                           Ports                         
+# ----------------------------------------------------------------------------------------------------------------------------
+# ksql_additional-ksqldb-server_1   /usr/bin/docker/run         Up      0.0.0.0:49153->8090/tcp,:::49153->8090/tcp            
+# ksql_kafka_1                      /etc/confluent/docker/run   Up      0.0.0.0:29092->29092/tcp,:::29092->29092/tcp, 9092/tcp
+# ksql_schema-registry_1            /etc/confluent/docker/run   Up      8081/tcp                                              
+# ksql_zookeeper_1                  /etc/confluent/docker/run   Up      2181/tcp, 2888/tcp, 3888/tcp                          
+# ksqldb-cli                        /bin/sh                     Up                                                            
+# primary-ksqldb-server             /usr/bin/docker/run         Up      0.0.0.0:8088->8088/tcp,:::8088->8088/tcp 
+
+
+# console on to kafka container
+docker exec -it ksql_kafka_1 /bin/bash
+
+
+#available commands 
+# [appuser@c4c7881b96c6 ~]$ kafka-
+# kafka-acls                        kafka-console-producer            kafka-dump-log                    kafka-metadata-shell              kafka-replica-verification        kafka-streams-application-reset
+# kafka-broker-api-versions         kafka-consumer-groups             kafka-features                    kafka-mirror-maker                kafka-run-class                   kafka-topics
+# kafka-cluster                     kafka-consumer-perf-test          kafka-get-offsets                 kafka-preferred-replica-election  kafka-server-start                kafka-transactions
+# kafka-configs                     kafka-delegation-tokens           kafka-leader-election             kafka-producer-perf-test          kafka-server-stop                 kafka-verifiable-consumer
+# kafka-console-consumer            kafka-delete-records              kafka-log-dirs                    kafka-reassign-partitions         kafka-storage                     kafka-verifiable-producer
+
+
+#create a topic for big dataset 
+[appuser@c4c7881b96c6 ~]$ kafka-topics --create --topic my_big_topic --partitions 1 --replication-factor 1 --bootstrap-server localhost:29092
+WARNING: Due to limitations in metric names, topics with a period ('.') or underscore ('_') could collide. To avoid issues it is best to use either, but not both.
+Created topic my_big_topic.
+
+#create a topic for 100 row dataset
+[appuser@c4c7881b96c6 ~]$ kafka-topics --create --topic my_test_topic --partitions 1 --replication-factor 1 --bootstrap-server localhost:29092
+WARNING: Due to limitations in metric names, topics with a period ('.') or underscore ('_') could collide. To avoid issues it is best to use either, but not both.
+Created topic my_test_topic.
+
+# as root in container editor installieren, there was none
+# dz@T470:~/kafka/ksql$ docker exec -u root  -ti  ksql_kafka_1  /bin/bash
+# [root@c4c7881b96c6 appuser]# yum install vi
+
+# python files as consumer for my_test_topic
+python3 testTopicConsumer.py
+
+# simulates a feed from the datatool script, writes to my_test_topic
+python3 ./datatoolFromPy.py
+
+
+
+# generate test data, copy to container, producer from cli
+docker cp stream100.jsonl.gz  ksql_kafka_1:/home/appuser/stream100.jsonl.gz
+docker exec -ti ksql_kafka_1   sh -c 'gunzip -c  stream100.jsonl.gz  | kafka-console-producer --broker-list localhost:9092 --topic my-test-topic' 
+
+# full dataset
+# copy data
+docker cp stream100000.jsonl.gz  ksql_kafka_1:/home/appuser/stream100000.jsonl.gz
+
+#add to topic  my_big_topic
+docker exec -ti ksql_kafka_1   sh -c 'gunzip -c  stream100000.jsonl.gz  | kafka-console-producer --broker-list localhost:9092 --topic my_big_topic'
+
+# check: count messages 
+# [appuser@c4c7881b96c6 ~]$ kafka-run-class kafka.tools.GetOffsetShell  --bootstrap-server localhost:29092 --topic my_big_topic
+# my_big_topic:0:1000000
+
+
+## run ksql cli
+# dz@T470:~/kafka/ksql$ docker ps
+# CONTAINER ID   IMAGE                                     COMMAND                  CREATED       STATUS       PORTS                                                     NAMES
+# a85ac61174d8   confluentinc/ksqldb-cli:latest            "/bin/sh"                2 hours ago   Up 2 hours                                                             ksqldb-cli
+# 64ca65db96bb   confluentinc/ksqldb-server:latest         "/usr/bin/docker/run"    2 hours ago   Up 2 hours   0.0.0.0:49153->8090/tcp, :::49153->8090/tcp               ksql_additional-ksqldb-server_1
+# f002e12c8933   confluentinc/ksqldb-server:latest         "/usr/bin/docker/run"    2 hours ago   Up 2 hours   0.0.0.0:8088->8088/tcp, :::8088->8088/tcp                 primary-ksqldb-server
+# cd933d3118ac   confluentinc/cp-schema-registry:latest    "/etc/confluent/dock…"   2 hours ago   Up 2 hours   8081/tcp                                                  ksql_schema-registry_1
+# c4c7881b96c6   confluentinc/cp-enterprise-kafka:latest   "/etc/confluent/dock…"   2 hours ago   Up 2 hours   9092/tcp, 0.0.0.0:29092->29092/tcp, :::29092->29092/tcp   ksql_kafka_1
+# 11022f2c672f   confluentinc/cp-zookeeper:latest          "/etc/confluent/dock…"   2 hours ago   Up 2 hours   2181/tcp, 2888/tcp, 3888/tcp                              ksql_zookeeper_1
+
+## run ksql cli
+docker exec -it ksqldb-cli ksql http://primary-ksqldb-server:8088
+
+
+# see status
+#ksql> 
+# SHOW TOPICS;
+# 
+#  Kafka Topic                 | Partitions | Partition Replicas 
+# ---------------------------------------------------------------
+#  my_big_topic                | 1          | 1                  
+#  my_test_topic               | 1          | 1                  
+# ---------------------------------------------------------------
+
+
+
+# in ksql:
+# CREATE STREAM gives access to topic and aggregations etc.
+# CREATE TABLE MY_NEW_TOPIC as select ... from stream generate a new topic MYNEWTOPIC in kafka server
+
+# OPTIONS:
+#   count from beginning. 
+#   The default value in ksqlDB is latest, which means all Kafka topics are read from the latest available offset.
+#   https://docs.ksqldb.io/en/latest/reference/server-configuration/
+
+#ksql> 
+SET 'auto.offset.reset'='earliest';
+#Successfully changed local property 'auto.offset.reset' to 'earliest'. Use the UNSET command to revert your change.
+
+#   instant out, https://developer.confluent.io/tutorials/finding-distinct-events/ksql.html 
+#ksql>
+SET 'cache.max.bytes.buffering' = '0';
+#Successfully changed local property 'cache.max.bytes.buffering' to '0'. Use the UNSET command to revert your change.
+
+
+#########################
+# that was only preparation to do the stream analyis.
+# now analysis part begins: (topic->stream -> aggregated stream -> table -> new topic)
+# ########################
+
+
+# 1. make a raw data stream from kafka topic
+# ksql> 
+CREATE STREAM TEST_TOPIC_STREAM_RAW (UID STRING, TS BIGINT) WITH (KAFKA_TOPIC='my_test_topic', KEY_FORMAT='KAFKA', VALUE_FORMAT='JSON');
+
+
+# 2. create anohter stream with formatted time and avro format
+#ksql> 
+create STREAM TEST_TOPIC_STREAM_RAW_STREAM  with (timestamp='event_ts', value_format='avro') AS select uid, ts as event_ts , FORMAT_TIMESTAMP(FROM_UNIXTIME(ts), 'yyyy-MM-dd HH:mm:ss') as r_ts from TEST_TOPIC_STREAM_RAW;
+
+# 3.
+# select unique users in a window with aggregation
+select count_distinct(UID) as uid_cnt, r_ts  from TEST_TOPIC_STREAM_RAW_STREAM WINDOW TUMBLING (SIZE 1 MINUTE, GRACE PERIOD 5 SECONDS) gro
+up by r_ts emit changes;
+
+# 4. 
+# create a table from stream to generate a new topic stream as distinct users per minute 
+# ksql> 
+create TABLE DIST_UID_P_M_2 AS select count_distinct(UID) as uid_cnt, cast(r_ts as string) as timestr  from TEST_TOPIC_STREAM_RAW_STREAM WINDOW TUMBLING (SIZE 1 MINUTE, GRACE PERIOD 5 SECONDS)
+ group by  cast(r_ts as string);
+
+
+# 5. 
+# feed the test topic with a python script. creates 10 new entries per iteration
+python3 ./datatoolFromPy.py 
+
+# 5. 
+# see what happens
+# ksql> 
+print DIST_UID_P_M_2;
+# Key format: SESSION(KAFKA_STRING) or HOPPING(KAFKA_STRING) or TUMBLING(KAFKA_STRING)
+# Value format: AVRO or KAFKA_BIGINT or KAFKA_DOUBLE
+# rowtime: 1970/01/17 23:50:44.384 Z, key: [1970-01-17 @1468200000/3617298925825438772], value: {"UID_CNT": 455}, partition: 0
+# rowtime: 1970/01/17 23:50:44.384 Z, key: [1970-01-17 @1468200000/3617298925825438772], value: {"UID_CNT": 466}, partition: 0
+# rowtime: 1970/01/17 23:50:44.384 Z, key: [1970-01-17 @1468200000/3617298925825438772], value: {"UID_CNT": 476}, partition: 0
+
+# key has rowtime, values stores the count of distint users per minute in the tumbling window.
+# a new topic is generated and can be consumed.
+
+# 6.
+# use a python consumer to read from the new topic.
+
+python3 testTopicPerMinuteConsumer.py 
+
+# writes out the formatted timestamp and counts per minute, but in a avro way so that the deserialze did not work as I expected
+
+#ConsumerRecord(topic='DIST_UID_P_M_2', partition=0, offset=52, timestamp=1468244384, timestamp_type=0, key=b'1970-01-17 23:50:44\x00\x00\x00\x00W\x82\xf4@', value=b'\x00\x00\x00\x00\x17\x02\xb2\x08', headers=[], checksum=None, serialized_key_size=27, serialized_value_size=8, serialized_header_size=-1)
+#ConsumerRecord(topic='DIST_UID_P_M_2', partition=0, offset=53, timestamp=1468244384, timestamp_type=0, key=b'1970-01-17 23:50:44\x00\x00\x00\x00W\x82\xf4@', value=b'\x00\x00\x00\x00\x17\x02\xc6\x08', headers=[], checksum=None, serialized_key_size=27, serialized_value_size=8, serialized_header_size=-1)
+#ConsumerRecord(topic='DIST_UID_P_M_2', partition=0, offset=54, timestamp=1468244384, timestamp_type=0, key=b'1970-01-17 23:50:44\x00\x00\x00\x00W\x82\xf4@', value=b'\x00\x00\x00\x00\x17\x02\xda\x08', headers=[], checksum=None, serialized_key_size=27, serialized_value_size=8, serialized_header_size=-1)
+
+# avro adds 5 bytes
+# https://stackoverflow.com/questions/44407780/how-to-decode-deserialize-avro-with-python-from-kafka
+
+
+# as suggested solution, I need to access the avro scheme definition from registry to build another deserialze method,
+# https://stackoverflow.com/questions/64341168/how-do-i-decode-an-avro-message-in-python
+# Here I stopped since I found no clean (and fast) solution on that - need to understand avro and schemes in kafka better.
+
+
